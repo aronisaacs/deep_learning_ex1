@@ -46,3 +46,28 @@ def create_data_loaders(
 
     return train_loader, train_eval_loader, test_loader
 
+
+def create_basic_data_loaders(
+    train_dataset: TensorDataset,
+    test_dataset: TensorDataset,
+    batch_size: int,
+) -> tuple[DataLoader, DataLoader, DataLoader]:
+    """Build train/test loaders without oversampling."""
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+    )
+    train_eval_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=len(test_dataset),
+        shuffle=False,
+    )
+    return train_loader, train_eval_loader, test_loader
+
+

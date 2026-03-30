@@ -13,6 +13,10 @@ def _multi_class_predictions(raw_outputs: torch.Tensor) -> torch.Tensor:
     return torch.argmax(raw_outputs, dim=1)
 
 
+def _multilabel_predictions(raw_outputs: torch.Tensor, threshold: float = 0.5) -> torch.Tensor:
+    return (raw_outputs >= threshold).to(raw_outputs.dtype)
+
+
 def _with_prefix(filename: str, filename_prefix: str = "") -> str:
     if not filename_prefix:
         return filename
@@ -65,9 +69,10 @@ class MultiClassAccuracyEvaluator(AbstractEvaluator):
         split: str,
         value: Any | None = None,
     ) -> None:
-        batch_labels = torch.argmax(labels, dim=1)
-        batch_preds = _multi_class_predictions(raw_outputs)
-        value = (batch_preds == batch_labels).float().mean().item()
+        batch_labels = labels.float()
+        batch_preds = _multilabel_predictions(raw_outputs)
+        # Exact-match accuracy for multi-label vectors.
+        value = (batch_preds == batch_labels).all(dim=1).float().mean().item()
         if split == "train":
             self.train_history.append(value)
         elif split == "test":
@@ -104,11 +109,11 @@ class PosNegAccuracyEvaluator(AbstractEvaluator):
         split: str,
         value: Any | None = None,
     ) -> None:
-        batch_labels = torch.argmax(labels, dim=1)
-        batch_preds = _multi_class_predictions(raw_outputs)
-        negative_class_idx = raw_outputs.shape[1] - 1
-        binary_preds = (batch_preds != negative_class_idx)
-        binary_labels = (batch_labels != negative_class_idx)
+        batch_labels = labels.float()
+        batch_preds = _multilabel_predictions(raw_outputs)
+        # Positive means at least one positive label bit is set.
+        binary_preds = (batch_preds.sum(dim=1) > 0)
+        binary_labels = (batch_labels.sum(dim=1) > 0)
         value = (binary_preds == binary_labels).float().mean().item()
         if split == "train":
             self.train_history.append(value)
@@ -158,19 +163,10 @@ class PerLabelAccuracyEvaluator(AbstractEvaluator):
         split: str,
         value: Any | None = None,
     ) -> None:
-        batch_labels = torch.argmax(labels, dim=1)
-        batch_preds = _multi_class_predictions(raw_outputs)
-        num_classes = raw_outputs.shape[1]
-
-        label_total = torch.bincount(batch_labels.detach().cpu(), minlength=num_classes)
-        correct_mask = (batch_preds == batch_labels)
-        label_correct = torch.bincount(
-            batch_labels[correct_mask].detach().cpu(), minlength=num_classes
-        )
-        value = [
-            (label_correct[i].item() / label_total[i].item()) if label_total[i].item() > 0 else 0.0
-            for i in range(num_classes)
-        ]
+        batch_labels = labels.float()
+        batch_preds = _multilabel_predictions(raw_outputs)
+        per_label_correct = (batch_preds == batch_labels).float().mean(dim=0)
+        value = per_label_correct.detach().cpu().tolist()
 
         if split == "train":
             self.train_history.append(value)

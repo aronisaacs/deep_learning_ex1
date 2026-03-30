@@ -1,3 +1,4 @@
+import csv
 import json
 import secrets
 from pathlib import Path
@@ -7,22 +8,26 @@ import torch
 from torch import nn, optim
 from torch.utils.data import TensorDataset
 
-from data_loaders import create_data_loaders
+from data_loaders import create_data_loaders, create_basic_data_loaders
 from training import train_model_epoch_eval
-from check import write_deduplicated_positive_files
 from evaluators import (
     EvaluatorHolder,
     MultiClassAccuracyEvaluator,
     PerLabelAccuracyEvaluator,
     PosNegAccuracyEvaluator,
 )
+from generate_multihot_labels import build_records, write_csv
 from model import AminoAcidNet
 from better_model import BetterAminoAcidNet
 
 AA_VOCAB = "ACDEFGHIKLMNPQRSTVWY"
 AA_TO_INDEX = {aa: idx for idx, aa in enumerate(AA_VOCAB)}
+NUM_CLASSES_ORIGINAL = 7
+NUM_CLASSES_MULTIHOT = 6
 
-NUM_CLASSES = 7  # 6 positive files + 1 negative class
+
+def encode_sequence(seq: str) -> list[int]:
+    return [AA_TO_INDEX[ch] for ch in seq]
 
 
 def read_sequences(file_path: Path) -> list[str]:
@@ -60,34 +65,24 @@ def split_source_sequences(
     return train_rows, train_labels, test_rows, test_labels
 
 
-def encode_sequences(rows: list[tuple[str, str]]) -> torch.Tensor:
-    encoded = [[AA_TO_INDEX[ch] for ch in seq] for seq, _ in rows]
-    return torch.tensor(encoded, dtype=torch.long)
-
-
-def to_one_hot(class_indices: torch.Tensor, num_classes: int) -> torch.Tensor:
-    """Convert class indices to one-hot encoded vectors."""
-    return torch.nn.functional.one_hot(class_indices, num_classes=num_classes).float()
-
-
-def make_datasets(data_dir: Path, test_ratio: float, seed: int):
+def make_original_datasets(data_dir: Path, test_ratio: float, seed: int):
+    """Create 7-class dataset from original pos/neg files (no dedup)."""
     rng = np.random.default_rng(seed)
 
-    pos_paths = sorted(data_dir.glob("*_pos_dedup.txt"))
-    if len(pos_paths) != NUM_CLASSES - 1:
+    pos_paths = sorted(p for p in data_dir.glob("*_pos.txt") if not p.name.endswith("_dedup.txt"))
+    if len(pos_paths) != NUM_CLASSES_ORIGINAL - 1:
         raise ValueError(
-            f"Expected {NUM_CLASSES - 1} deduplicated positive files, found {len(pos_paths)}"
+            f"Expected {NUM_CLASSES_ORIGINAL - 1} positive files, found {len(pos_paths)}"
         )
-    neg_path = data_dir / "negs_filtered.txt"
+    neg_path = data_dir / "negs.txt"
 
     train_rows, train_labels, test_rows, test_labels = [], [], [], []
 
-    # Assign unique class labels 0-5 to each positive file
     for class_idx, pos_path in enumerate(pos_paths):
         sequences = read_sequences(pos_path)
         tr_r, tr_l, te_r, te_l = split_source_sequences(
             sequences=sequences,
-            class_label=class_idx,  # 0 to 5
+            class_label=class_idx,
             source_name=pos_path.name,
             test_ratio=test_ratio,
             rng=rng,
@@ -97,11 +92,10 @@ def make_datasets(data_dir: Path, test_ratio: float, seed: int):
         test_rows.extend(te_r)
         test_labels.extend(te_l)
 
-    # Assign label 6 to negatives
     neg_sequences = read_sequences(neg_path)
     tr_r, tr_l, te_r, te_l = split_source_sequences(
         sequences=neg_sequences,
-        class_label=6,  # Negative class
+        class_label=NUM_CLASSES_ORIGINAL - 1,
         source_name=neg_path.name,
         test_ratio=test_ratio,
         rng=rng,
@@ -111,14 +105,13 @@ def make_datasets(data_dir: Path, test_ratio: float, seed: int):
     test_rows.extend(te_r)
     test_labels.extend(te_l)
 
-    train_x = encode_sequences(train_rows)
-    test_x = encode_sequences(test_rows)
+    train_x = torch.tensor([encode_sequence(seq) for seq, _ in train_rows], dtype=torch.long)
+    test_x = torch.tensor([encode_sequence(seq) for seq, _ in test_rows], dtype=torch.long)
     train_y_indices = torch.tensor(train_labels, dtype=torch.long)
     test_y_indices = torch.tensor(test_labels, dtype=torch.long)
-    
-    # Convert to one-hot encoding
-    train_y = to_one_hot(train_y_indices, NUM_CLASSES)
-    test_y = to_one_hot(test_y_indices, NUM_CLASSES)
+
+    train_y = torch.nn.functional.one_hot(train_y_indices, num_classes=NUM_CLASSES_ORIGINAL).float()
+    test_y = torch.nn.functional.one_hot(test_y_indices, num_classes=NUM_CLASSES_ORIGINAL).float()
 
     train_dataset = TensorDataset(train_x, train_y)
     test_dataset = TensorDataset(test_x, test_y)
@@ -126,11 +119,86 @@ def make_datasets(data_dir: Path, test_ratio: float, seed: int):
     split_stats = {
         "train_size": len(train_dataset),
         "test_size": len(test_dataset),
-        "train_label_counts": {i: int((train_y_indices == i).sum().item()) for i in range(NUM_CLASSES)},
-        "test_label_counts": {i: int((test_y_indices == i).sum().item()) for i in range(NUM_CLASSES)},
+        "train_label_counts": {i: int((train_y_indices == i).sum().item()) for i in range(NUM_CLASSES_ORIGINAL)},
+        "test_label_counts": {i: int((test_y_indices == i).sum().item()) for i in range(NUM_CLASSES_ORIGINAL)},
     }
 
     return train_dataset, test_dataset, train_y_indices, split_stats
+
+
+def load_multihot_rows(csv_path: Path) -> list[tuple[str, list[float], int]]:
+    rows: list[tuple[str, list[float], int]] = []
+    with csv_path.open("r", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            seq = row["sequence"].strip().upper()
+            if len(seq) != 9 or any(ch not in AA_TO_INDEX for ch in seq):
+                continue
+            labels = [float(row[f"label_{i}"]) for i in range(NUM_CLASSES_MULTIHOT)]
+            in_negative = int(row.get("in_negative", "0"))
+            rows.append((seq, labels, in_negative))
+    return rows
+
+
+def split_multihot_rows(
+    rows: list[tuple[str, list[float], int]],
+    test_ratio: float,
+    seed: int,
+) -> tuple[list[tuple[str, list[float], int]], list[tuple[str, list[float], int]]]:
+    """Split while preserving positive-only vs negative-only distribution."""
+    rng = np.random.default_rng(seed)
+    positive_rows = [r for r in rows if sum(r[1]) > 0]
+    negative_rows = [r for r in rows if sum(r[1]) == 0]
+
+    def _split(group):
+        if len(group) <= 1:
+            return group, []
+        indices = rng.permutation(len(group))
+        test_count = int(round(len(group) * test_ratio))
+        test_count = min(max(test_count, 1), len(group) - 1)
+        test_idx = set(indices[:test_count].tolist())
+        train_group = [item for i, item in enumerate(group) if i not in test_idx]
+        test_group = [item for i, item in enumerate(group) if i in test_idx]
+        return train_group, test_group
+
+    train_pos, test_pos = _split(positive_rows)
+    train_neg, test_neg = _split(negative_rows)
+
+    train_rows = train_pos + train_neg
+    test_rows = test_pos + test_neg
+    rng.shuffle(train_rows)
+    rng.shuffle(test_rows)
+    return train_rows, test_rows
+
+
+def make_multihot_datasets(data_dir: Path, test_ratio: float, seed: int):
+    """Create 6-dim multi-hot dataset from negs_filtered.txt."""
+    csv_path = Path("artifacts/multihot_labels.csv")
+    records, pos_names = build_records(data_dir)
+    write_csv(records, pos_names, csv_path)
+
+    rows = load_multihot_rows(csv_path)
+    train_rows, test_rows = split_multihot_rows(rows, test_ratio=test_ratio, seed=seed)
+
+    train_x = torch.tensor([encode_sequence(seq) for seq, _, _ in train_rows], dtype=torch.long)
+    test_x = torch.tensor([encode_sequence(seq) for seq, _, _ in test_rows], dtype=torch.long)
+    train_y = torch.tensor([labels for _, labels, _ in train_rows], dtype=torch.float32)
+    test_y = torch.tensor([labels for _, labels, _ in test_rows], dtype=torch.float32)
+
+    train_dataset = TensorDataset(train_x, train_y)
+    test_dataset = TensorDataset(test_x, test_y)
+
+    split_stats = {
+        "train_size": len(train_dataset),
+        "test_size": len(test_dataset),
+        "train_positive_rows": int((train_y.sum(dim=1) > 0).sum().item()),
+        "train_negative_rows": int((train_y.sum(dim=1) == 0).sum().item()),
+        "test_positive_rows": int((test_y.sum(dim=1) > 0).sum().item()),
+        "test_negative_rows": int((test_y.sum(dim=1) == 0).sum().item()),
+        "train_label_positive_counts": [int(train_y[:, i].sum().item()) for i in range(NUM_CLASSES_MULTIHOT)],
+        "test_label_positive_counts": [int(test_y[:, i].sum().item()) for i in range(NUM_CLASSES_MULTIHOT)],
+    }
+    return train_dataset, test_dataset, split_stats
 
 
 def choose_device() -> str:
@@ -153,15 +221,14 @@ def train_and_evaluate(
     device,
     seed,
 ):
-    """Train a model with provided dependencies, then print/save results."""
     model_name = model.__class__.__name__
     run_id = f"{model_name}_seed{seed}"
     model_save_path = f"artifacts/model_{run_id}.pt"
     history_path = f"artifacts/history_{run_id}.json"
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Training {model_name}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     trained_evaluator_holder = train_model_epoch_eval(
         model=model,
         optimizer=optimizer,
@@ -174,8 +241,8 @@ def train_and_evaluate(
         evaluator_holder=evaluator_holder,
         model_save_path=model_save_path,
     )
-    history = trained_evaluator_holder.history
 
+    history = trained_evaluator_holder.history
     print(f"\nFinal {model_name} evaluator metrics:")
     trained_evaluator_holder.print_evaluator_results()
 
@@ -195,7 +262,6 @@ def train_and_evaluate(
 def main():
     data_dir = Path("ex1 data")
     test_ratio = 0.1
-    # Generate a new seed every run so data split/training vary by default.
     seed = secrets.randbelow(2**32)
     num_epochs = 50
     batch_size = 256
@@ -206,34 +272,26 @@ def main():
     np.random.seed(seed)
     print(f"Run seed: {seed}")
 
-    dedup_stats = write_deduplicated_positive_files(data_dir)
-    print("Wrote deduplicated positive files (*_pos_dedup.txt)")
-    for file_name in sorted(dedup_stats):
-        s = dedup_stats[file_name]
-        print(
-            f"  {file_name}: original={s['original_valid']}, "
-            f"removed_shared={s['removed_shared']}, remaining={s['remaining']}"
-        )
-
-    train_dataset, test_dataset, train_y_indices, split_stats = make_datasets(
+    # Train AminoAcidNet with original 7-class dataset
+    print("\n" + "=" * 60)
+    print("Loading original 7-class dataset for AminoAcidNet")
+    print("=" * 60)
+    train_dataset_orig, test_dataset_orig, train_y_indices, split_stats_orig = make_original_datasets(
         data_dir=data_dir,
         test_ratio=test_ratio,
         seed=seed,
     )
+    print("Split stats (original):", split_stats_orig)
 
-    print("Split stats:", split_stats)
-
-    train_loader, train_eval_loader, test_loader = create_data_loaders(
-        train_dataset=train_dataset,
-        test_dataset=test_dataset,
+    train_loader_orig, train_eval_loader_orig, test_loader_orig = create_data_loaders(
+        train_dataset=train_dataset_orig,
+        test_dataset=test_dataset_orig,
         train_labels=train_y_indices,
         batch_size=batch_size,
-        num_classes=NUM_CLASSES,
+        num_classes=NUM_CLASSES_ORIGINAL,
     )
-    print("Created WeightedRandomSampler for balanced training")
 
-    # Train both models
-    model = AminoAcidNet(output_dim=NUM_CLASSES)
+    model = AminoAcidNet(output_dim=NUM_CLASSES_ORIGINAL)
     loss_module = nn.CrossEntropyLoss()
     evaluator_holder = EvaluatorHolder(
         evaluators=[
@@ -249,16 +307,33 @@ def main():
         optimizer=optim.Adam(model.parameters(), lr=lr),
         loss_module=loss_module,
         evaluator_holder=evaluator_holder,
-        train_loader=train_loader,
-        train_eval_loader=train_eval_loader,
-        test_loader=test_loader,
+        train_loader=train_loader_orig,
+        train_eval_loader=train_eval_loader_orig,
+        test_loader=test_loader_orig,
         num_epochs=num_epochs,
         device=device,
         seed=seed,
     )
 
-    model = BetterAminoAcidNet(output_dim=NUM_CLASSES)
-    loss_module = nn.CrossEntropyLoss()
+    # Train BetterAminoAcidNet with 6-dim multi-hot dataset
+    print("\n" + "=" * 60)
+    print("Loading 6-dim multi-hot dataset for BetterAminoAcidNet")
+    print("=" * 60)
+    train_dataset_multi, test_dataset_multi, split_stats_multi = make_multihot_datasets(
+        data_dir=data_dir,
+        test_ratio=test_ratio,
+        seed=seed,
+    )
+    print("Split stats (multi-hot):", split_stats_multi)
+
+    train_loader_multi, train_eval_loader_multi, test_loader_multi = create_basic_data_loaders(
+        train_dataset=train_dataset_multi,
+        test_dataset=test_dataset_multi,
+        batch_size=batch_size,
+    )
+
+    model = BetterAminoAcidNet(output_dim=NUM_CLASSES_MULTIHOT)
+    loss_module = nn.BCELoss()
     evaluator_holder = EvaluatorHolder(
         evaluators=[
             MultiClassAccuracyEvaluator(),
@@ -273,9 +348,9 @@ def main():
         optimizer=optim.Adam(model.parameters(), lr=lr),
         loss_module=loss_module,
         evaluator_holder=evaluator_holder,
-        train_loader=train_loader,
-        train_eval_loader=train_eval_loader,
-        test_loader=test_loader,
+        train_loader=train_loader_multi,
+        train_eval_loader=train_eval_loader_multi,
+        test_loader=test_loader_multi,
         num_epochs=num_epochs,
         device=device,
         seed=seed,
