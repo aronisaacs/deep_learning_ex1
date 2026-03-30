@@ -143,31 +143,21 @@ def choose_device() -> str:
 
 def train_and_evaluate(
     model,
+    optimizer,
+    loss_module,
+    evaluator_holder,
     train_loader,
     train_eval_loader,
     test_loader,
     num_epochs,
-    lr,
     device,
     seed,
 ):
-    """Train a model, evaluate it, save results and plots."""
+    """Train a model with provided dependencies, then print/save results."""
     model_name = model.__class__.__name__
     run_id = f"{model_name}_seed{seed}"
     model_save_path = f"artifacts/model_{run_id}.pt"
     history_path = f"artifacts/history_{run_id}.json"
-
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-    loss_module = nn.CrossEntropyLoss()
-    evaluator_holder = EvaluatorHolder(
-        evaluators=[
-            MultiClassAccuracyEvaluator(),
-            PosNegAccuracyEvaluator(),
-            PerLabelAccuracyEvaluator(),
-        ],
-        device=device,
-        loss_module=loss_module,
-    )
 
     print(f"\n{'='*60}")
     print(f"Training {model_name}")
@@ -243,24 +233,50 @@ def main():
     print("Created WeightedRandomSampler for balanced training")
 
     # Train both models
+    model = AminoAcidNet(output_dim=NUM_CLASSES)
+    loss_module = nn.CrossEntropyLoss()
+    evaluator_holder = EvaluatorHolder(
+        evaluators=[
+            MultiClassAccuracyEvaluator(),
+            PosNegAccuracyEvaluator(),
+            PerLabelAccuracyEvaluator(),
+        ],
+        device=device,
+        loss_module=loss_module,
+    )
     train_and_evaluate(
-        model=AminoAcidNet(),
+        model=model,
+        optimizer=optim.Adam(model.parameters(), lr=lr),
+        loss_module=loss_module,
+        evaluator_holder=evaluator_holder,
         train_loader=train_loader,
         train_eval_loader=train_eval_loader,
         test_loader=test_loader,
         num_epochs=num_epochs,
-        lr=lr,
         device=device,
         seed=seed,
     )
 
+    model = BetterAminoAcidNet(output_dim=NUM_CLASSES)
+    loss_module = nn.CrossEntropyLoss()
+    evaluator_holder = EvaluatorHolder(
+        evaluators=[
+            MultiClassAccuracyEvaluator(),
+            PosNegAccuracyEvaluator(),
+            PerLabelAccuracyEvaluator(),
+        ],
+        device=device,
+        loss_module=loss_module,
+    )
     train_and_evaluate(
-        model=BetterAminoAcidNet(),
+        model=model,
+        optimizer=optim.Adam(model.parameters(), lr=lr),
+        loss_module=loss_module,
+        evaluator_holder=evaluator_holder,
         train_loader=train_loader,
         train_eval_loader=train_eval_loader,
         test_loader=test_loader,
         num_epochs=num_epochs,
-        lr=lr,
         device=device,
         seed=seed,
     )

@@ -19,6 +19,16 @@ def _with_prefix(filename: str, filename_prefix: str = "") -> str:
     return f"{filename_prefix}_{filename}"
 
 
+def _prepare_targets_for_loss(loss_module, labels: torch.Tensor) -> torch.Tensor:
+    """Normalize target format for common loss modules."""
+    if isinstance(loss_module, torch.nn.CrossEntropyLoss):
+        # CrossEntropyLoss expects class indices, not one-hot vectors.
+        return torch.argmax(labels, dim=1).long() if labels.ndim > 1 else labels.long()
+    if isinstance(loss_module, (torch.nn.BCEWithLogitsLoss, torch.nn.BCELoss)):
+        return labels.float()
+    return labels.float()
+
+
 class AbstractEvaluator(ABC):
     key = "metric"
 
@@ -216,7 +226,8 @@ class LossEvaluator(AbstractEvaluator):
             if raw_outputs.numel() == 0:
                 numeric_value = 0.0
             else:
-                numeric_value = float(self.loss_module(raw_outputs, labels.float()).item())
+                targets = _prepare_targets_for_loss(self.loss_module, labels)
+                numeric_value = float(self.loss_module(raw_outputs, targets).item())
         if split == "train":
             self.train_history.append(numeric_value)
         elif split == "test":

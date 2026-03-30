@@ -15,8 +15,8 @@ class BetterAminoAcidNet(nn.Module):
         input_dim = seq_len * vocab_size
         self.fc1 = nn.Linear(input_dim, 64)
         self.fc2 = nn.Linear(64, 32)
+        self.softmax = nn.Softmax(dim=1)
         self.output = nn.Linear(32, output_dim)
-
         self.relu = nn.ReLU()
         self.dropout1 = nn.Dropout(dropout_p)
         self.dropout2 = nn.Dropout(dropout_p)
@@ -31,4 +31,5 @@ class BetterAminoAcidNet(nn.Module):
         #x = self.dropout2(x)
 
         # Return raw logits; use BCEWithLogitsLoss for training.
-        return self.output(x)
+        x = self.output(x)
+        return self.softmax(x)

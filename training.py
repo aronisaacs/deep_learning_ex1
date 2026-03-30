@@ -6,6 +6,15 @@ from evaluators import EvaluatorHolder
 
 
 
+def _prepare_targets_for_loss(loss_module, labels: torch.Tensor) -> torch.Tensor:
+    """Normalize target format for common loss modules."""
+    if isinstance(loss_module, torch.nn.CrossEntropyLoss):
+        return torch.argmax(labels, dim=1).long() if labels.ndim > 1 else labels.long()
+    if isinstance(loss_module, (torch.nn.BCEWithLogitsLoss, torch.nn.BCELoss)):
+        return labels.float()
+    return labels.float()
+
+
 def train_model_epoch_eval(
     model,
     optimizer,
@@ -66,7 +75,8 @@ def train_model_epoch_eval(
             preds = preds.squeeze(dim=1)
 
             # 3) Compute loss
-            loss = loss_module(preds, data_labels.float())
+            loss_targets = _prepare_targets_for_loss(loss_module, data_labels)
+            loss = loss_module(preds, loss_targets)
 
             # 4) Backprop + weight update
             optimizer.zero_grad()
@@ -89,6 +99,8 @@ def train_model_epoch_eval(
         evaluator_holder.history["saved_model_path"] = None
 
     return evaluator_holder
+
+
 
 
 
