@@ -222,9 +222,9 @@ def train_and_evaluate(
     seed,
 ):
     model_name = model.__class__.__name__
-    run_id = f"{model_name}_seed{seed}"
-    model_save_path = f"artifacts/model_{run_id}.pt"
-    history_path = f"artifacts/history_{run_id}.json"
+    run_id = model_name
+    model_save_path = f"artifacts/model_{model_name}_seed{seed}.pt"
+    history_path = f"artifacts/history_{model_name}_seed{seed}.json"
 
     print(f"\n{'=' * 60}")
     print(f"Training {model_name}")
@@ -302,18 +302,18 @@ def main():
         device=device,
         loss_module=loss_module,
     )
-    train_and_evaluate(
-        model=model,
-        optimizer=optim.Adam(model.parameters(), lr=lr),
-        loss_module=loss_module,
-        evaluator_holder=evaluator_holder,
-        train_loader=train_loader_orig,
-        train_eval_loader=train_eval_loader_orig,
-        test_loader=test_loader_orig,
-        num_epochs=num_epochs,
-        device=device,
-        seed=seed,
-    )
+    # train_and_evaluate(
+    #     model=model,
+    #     optimizer=optim.Adam(model.parameters(), lr=lr),
+    #     loss_module=loss_module,
+    #     evaluator_holder=evaluator_holder,
+    #     train_loader=train_loader_orig,
+    #     train_eval_loader=train_eval_loader_orig,
+    #     test_loader=test_loader_orig,
+    #     num_epochs=num_epochs,
+    #     device=device,
+    #     seed=seed,
+    # )
 
     # Train BetterAminoAcidNet with 6-dim multi-hot dataset
     print("\n" + "=" * 60)

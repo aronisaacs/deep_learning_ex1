@@ -13,26 +13,20 @@ class BetterAminoAcidNet(nn.Module):
         self.flatten = nn.Flatten()
 
         input_dim = seq_len * vocab_size
-        self.fc1 = nn.Linear(input_dim, 256)
-        self.fc2 = nn.Linear(256, 128)
-        self.fc3 = nn.Linear(128, 64)
-        self.output = nn.Linear(64, output_dim)
+        self.fc1 = nn.Linear(input_dim, 60)
+        self.fc2 = nn.Linear(60, 20)
+        self.output = nn.Linear(20, output_dim)
         self.relu = nn.ReLU()
         self.dropout1 = nn.Dropout(dropout_p)
         self.dropout2 = nn.Dropout(dropout_p)
-        self.dropout3 = nn.Dropout(dropout_p)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         x = F.one_hot(x.to(torch.long), num_classes=self.vocab_size).float()
         x = self.flatten(x)
-
         x = self.relu(self.fc1(x))
         x = self.dropout1(x)
         x = self.relu(self.fc2(x))
         x = self.dropout2(x)
-        x = self.relu(self.fc3(x))
-        x = self.dropout3(x)
-
         x = self.output(x)
         return self.sigmoid(x)
