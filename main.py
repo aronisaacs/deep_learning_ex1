@@ -15,10 +15,15 @@ from evaluators import (
     MultiClassAccuracyEvaluator,
     PerLabelAccuracyEvaluator,
     PosNegAccuracyEvaluator,
+    PrecisionEvaluator,
+    RecallEvaluator,
+    PositiveSamplesAverageEvaluator,
+    ClassDistributionEvaluator,
 )
 from generate_multihot_labels import build_records, write_csv
 from model import AminoAcidNet
 from better_model import BetterAminoAcidNet
+from peptide_cnn import PeptideCNN
 
 AA_VOCAB = "ACDEFGHIKLMNPQRSTVWY"
 AA_TO_INDEX = {aa: idx for idx, aa in enumerate(AA_VOCAB)}
@@ -339,15 +344,53 @@ def main():
             MultiClassAccuracyEvaluator(),
             PosNegAccuracyEvaluator(),
             PerLabelAccuracyEvaluator(),
+            PrecisionEvaluator(),
+            RecallEvaluator(),
+            PositiveSamplesAverageEvaluator(),
+            ClassDistributionEvaluator(),
         ],
         device=device,
         loss_module=loss_module,
     )
+    # train_and_evaluate(
+    #     model=model,
+    #     optimizer=optim.Adam(model.parameters(), lr=lr),
+    #     loss_module=loss_module,
+    #     evaluator_holder=evaluator_holder,
+    #     train_loader=train_loader_multi,
+    #     train_eval_loader=train_eval_loader_multi,
+    #     test_loader=test_loader_multi,
+    #     num_epochs=num_epochs,
+    #     device=device,
+    #     seed=seed,
+    # )
+
+    # Train PeptideCNN with 6-dim multi-hot dataset
+    print("\n" + "=" * 60)
+    print("Training PeptideCNN with 6-dim multi-hot dataset")
+    print("=" * 60)
+
+    model_cnn = PeptideCNN(vocab_size=len(AA_VOCAB) + 1, output_dim=NUM_CLASSES_MULTIHOT)  # +1 for padding/unknown
+    pos_weight=torch.tensor([1.5, 1.5, 1.5, 1.5, 10, 1.5])  # Adjust as needed for class imbalance
+    loss_module_cnn = nn.BCEWithLogitsLoss()
+    evaluator_holder_cnn = EvaluatorHolder(
+        evaluators=[
+            MultiClassAccuracyEvaluator(),
+            PosNegAccuracyEvaluator(),
+            PerLabelAccuracyEvaluator(),
+            PrecisionEvaluator(),
+            RecallEvaluator(),
+            PositiveSamplesAverageEvaluator(),
+            ClassDistributionEvaluator(),
+        ],
+        device=device,
+        loss_module=loss_module_cnn,
+    )
     train_and_evaluate(
-        model=model,
-        optimizer=optim.Adam(model.parameters(), lr=lr),
-        loss_module=loss_module,
-        evaluator_holder=evaluator_holder,
+        model=model_cnn,
+        optimizer=optim.Adam(model_cnn.parameters(), lr=lr),
+        loss_module=loss_module_cnn,
+        evaluator_holder=evaluator_holder_cnn,
         train_loader=train_loader_multi,
         train_eval_loader=train_eval_loader_multi,
         test_loader=test_loader_multi,
@@ -356,7 +399,4 @@ def main():
         seed=seed,
     )
 
-
-if __name__ == "__main__":
-    main()
-
+main()

@@ -90,23 +90,26 @@ def plot_per_label_panels(
     *,
     output_dir: str,
     filename: str,
+    metric_name: str = "Accuracy",
 ) -> None:
     epochs = np.arange(train_label_acc.shape[0])
     num_labels = train_label_acc.shape[1]
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
     for label_idx in range(num_labels):
-        axes[0].plot(epochs, train_label_acc[:, label_idx], label=f"Label {label_idx}")
-        axes[1].plot(epochs, test_label_acc[:, label_idx], label=f"Label {label_idx}")
+        axes[0].plot(epochs, train_label_acc[:, label_idx], label=f"Allele {label_idx}")
+        axes[1].plot(epochs, test_label_acc[:, label_idx], label=f"Allele {label_idx}")
 
     style_accuracy_axis(
         axes[0],
-        title="Train Per-Label Accuracy",
+        title=f"Train Per-Allele {metric_name}",
+        ylabel=metric_name,
         legend_kwargs={"loc": "best", "ncol": 2, "fontsize": 8},
     )
     style_accuracy_axis(
         axes[1],
-        title="Test Per-Label Accuracy",
+        title=f"Test Per-Allele {metric_name}",
+        ylabel=metric_name,
         legend_kwargs={"loc": "best", "ncol": 2, "fontsize": 8},
     )
     save_figure(fig, output_dir, filename)

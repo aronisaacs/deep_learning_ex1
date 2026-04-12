@@ -5,6 +5,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from sklearn.metrics import precision_score, recall_score
 
 from plotters import plot_per_label_panels, plot_train_test_curves, plot_train_test_loss_curves
 
@@ -70,6 +71,8 @@ class MultiClassAccuracyEvaluator(AbstractEvaluator):
         value: Any | None = None,
     ) -> None:
         batch_labels = labels.float()
+        # Apply sigmoid to convert logits to probabilities
+        raw_outputs = torch.sigmoid(raw_outputs)
         batch_preds = _multilabel_predictions(raw_outputs)
         # Exact-match accuracy for multi-label vectors.
         value = (batch_preds == batch_labels).all(dim=1).float().mean().item()
@@ -110,6 +113,8 @@ class PosNegAccuracyEvaluator(AbstractEvaluator):
         value: Any | None = None,
     ) -> None:
         batch_labels = labels.float()
+        # Apply sigmoid to convert logits to probabilities
+        raw_outputs = torch.sigmoid(raw_outputs)
         batch_preds = _multilabel_predictions(raw_outputs)
         # Positive means at least one positive label bit is set.
         binary_preds = (batch_preds.sum(dim=1) > 0)
@@ -164,6 +169,8 @@ class PerLabelAccuracyEvaluator(AbstractEvaluator):
         value: Any | None = None,
     ) -> None:
         batch_labels = labels.float()
+        # Apply sigmoid to convert logits to probabilities
+        raw_outputs = torch.sigmoid(raw_outputs)
         batch_preds = _multilabel_predictions(raw_outputs)
         per_label_correct = (batch_preds == batch_labels).float().mean(dim=0)
         value = per_label_correct.detach().cpu().tolist()
@@ -186,6 +193,7 @@ class PerLabelAccuracyEvaluator(AbstractEvaluator):
             test_label_acc,
             output_dir=output_dir,
             filename=_with_prefix("training_history_per_label_accuracy.png", filename_prefix),
+            metric_name="Accuracy",
         )
 
     def print_final_result(self) -> None:
@@ -198,6 +206,250 @@ class PerLabelAccuracyEvaluator(AbstractEvaluator):
         else:
             test_final = "N/A"
         print(f"  {self.key}: train={train_final}, test={test_final}")
+
+
+class PrecisionEvaluator(AbstractEvaluator):
+    key = "precision"
+
+    def update(
+        self,
+        raw_outputs: torch.Tensor,
+        labels: torch.Tensor,
+        split: str,
+        value: Any | None = None,
+    ) -> None:
+        batch_labels = labels.float().detach().cpu().numpy()
+        # Apply sigmoid to convert logits to probabilities
+        raw_outputs = torch.sigmoid(raw_outputs)
+        batch_preds = _multilabel_predictions(raw_outputs).detach().cpu().numpy()
+        
+        # Calculate precision for each of the 6 alleles
+        precisions = []
+        for i in range(6):
+            p = precision_score(batch_labels[:, i], batch_preds[:, i], zero_division=0.0)
+            precisions.append(p)
+        
+        if split == "train":
+            self.train_history.append(precisions)
+        elif split == "test":
+            self.test_history.append(precisions)
+        else:
+            raise ValueError(f"Unsupported split: {split}")
+
+    def plot(self, output_dir: str = ".", filename_prefix: str = "") -> None:
+        if not self.train_history or not self.test_history:
+            return
+
+        train_precision = np.array(self.train_history, dtype=float)
+        test_precision = np.array(self.test_history, dtype=float)
+        plot_per_label_panels(
+            train_precision,
+            test_precision,
+            output_dir=output_dir,
+            filename=_with_prefix("training_history_precision.png", filename_prefix),
+            metric_name="Precision",
+        )
+
+    def print_final_result(self) -> None:
+        if self.train_history:
+            train_final = "[" + ", ".join(f"{v:.4f}" for v in self.train_history[-1]) + "]"
+        else:
+            train_final = "N/A"
+        if self.test_history:
+            test_final = "[" + ", ".join(f"{v:.4f}" for v in self.test_history[-1]) + "]"
+        else:
+            test_final = "N/A"
+        print(f"  {self.key}: train={train_final}, test={test_final}")
+
+
+class RecallEvaluator(AbstractEvaluator):
+    key = "recall"
+
+    def update(
+        self,
+        raw_outputs: torch.Tensor,
+        labels: torch.Tensor,
+        split: str,
+        value: Any | None = None,
+    ) -> None:
+        batch_labels = labels.float().detach().cpu().numpy()
+        # Apply sigmoid to convert logits to probabilities
+        raw_outputs = torch.sigmoid(raw_outputs)
+        batch_preds = _multilabel_predictions(raw_outputs).detach().cpu().numpy()
+        
+        # Calculate recall for each of the 6 alleles
+        recalls = []
+        for i in range(6):
+            r = recall_score(batch_labels[:, i], batch_preds[:, i], zero_division=0.0)
+            recalls.append(r)
+        
+        if split == "train":
+            self.train_history.append(recalls)
+        elif split == "test":
+            self.test_history.append(recalls)
+        else:
+            raise ValueError(f"Unsupported split: {split}")
+
+    def plot(self, output_dir: str = ".", filename_prefix: str = "") -> None:
+        if not self.train_history or not self.test_history:
+            return
+
+        train_recall = np.array(self.train_history, dtype=float)
+        test_recall = np.array(self.test_history, dtype=float)
+        plot_per_label_panels(
+            train_recall,
+            test_recall,
+            output_dir=output_dir,
+            filename=_with_prefix("training_history_recall.png", filename_prefix),
+            metric_name="Recall",
+        )
+
+    def print_final_result(self) -> None:
+        if self.train_history:
+            train_final = "[" + ", ".join(f"{v:.4f}" for v in self.train_history[-1]) + "]"
+        else:
+            train_final = "N/A"
+        if self.test_history:
+            test_final = "[" + ", ".join(f"{v:.4f}" for v in self.test_history[-1]) + "]"
+        else:
+            test_final = "N/A"
+        print(f"  {self.key}: train={train_final}, test={test_final}")
+
+
+class PositiveSamplesAverageEvaluator(AbstractEvaluator):
+    """Track average logit/probability values for positive samples per allele."""
+    key = "positive_samples_avg"
+
+    def update(
+        self,
+        raw_outputs: torch.Tensor,
+        labels: torch.Tensor,
+        split: str,
+        value: Any | None = None,
+    ) -> None:
+        # Apply sigmoid to convert logits to probabilities
+        raw_outputs = torch.sigmoid(raw_outputs)
+        batch_outputs = raw_outputs.float().detach().cpu().numpy()
+        batch_labels = labels.float().detach().cpu().numpy()
+        
+        # Calculate average output for positive samples for each of the 6 alleles
+        avg_outputs = []
+        for i in range(6):
+            # Find indices where the true label is positive (1)
+            positive_mask = batch_labels[:, i] > 0.5
+            
+            if positive_mask.sum() > 0:
+                # Average of outputs where true label is positive
+                avg = batch_outputs[positive_mask, i].mean()
+            else:
+                # No positive samples in this batch
+                avg = 0.0
+            
+            avg_outputs.append(float(avg))
+        
+        if split == "train":
+            self.train_history.append(avg_outputs)
+        elif split == "test":
+            self.test_history.append(avg_outputs)
+        else:
+            raise ValueError(f"Unsupported split: {split}")
+
+    def plot(self, output_dir: str = ".", filename_prefix: str = "") -> None:
+        if not self.train_history or not self.test_history:
+            return
+
+        train_avg = np.array(self.train_history, dtype=float)
+        test_avg = np.array(self.test_history, dtype=float)
+        plot_per_label_panels(
+            train_avg,
+            test_avg,
+            output_dir=output_dir,
+            filename=_with_prefix("training_history_positive_avg.png", filename_prefix),
+            metric_name="Avg Logit (Positive Samples)",
+        )
+
+    def print_final_result(self) -> None:
+        if self.train_history:
+            train_final = "[" + ", ".join(f"{v:.4f}" for v in self.train_history[-1]) + "]"
+        else:
+            train_final = "N/A"
+        if self.test_history:
+            test_final = "[" + ", ".join(f"{v:.4f}" for v in self.test_history[-1]) + "]"
+        else:
+            test_final = "N/A"
+        print(f"  {self.key}: train={train_final}, test={test_final}")
+
+
+class ClassDistributionEvaluator(AbstractEvaluator):
+    """Track class distribution (positive vs negative samples) per allele."""
+    key = "class_distribution"
+
+    def __init__(self):
+        super().__init__()
+        self.train_pos_counts = None
+        self.train_neg_counts = None
+        self.test_pos_counts = None
+        self.test_neg_counts = None
+
+    def update(
+        self,
+        raw_outputs: torch.Tensor,
+        labels: torch.Tensor,
+        split: str,
+        value: Any | None = None,
+    ) -> None:
+        batch_labels = labels.float().detach().cpu().numpy()
+        
+        # Count positive and negative samples for each of the 6 alleles
+        pos_counts = []
+        neg_counts = []
+        
+        for i in range(6):
+            pos = (batch_labels[:, i] == 1).sum()
+            neg = (batch_labels[:, i] == 0).sum()
+            pos_counts.append(int(pos))
+            neg_counts.append(int(neg))
+        
+        if split == "train":
+            # Accumulate counts
+            if self.train_pos_counts is None:
+                self.train_pos_counts = pos_counts
+                self.train_neg_counts = neg_counts
+            else:
+                self.train_pos_counts = [self.train_pos_counts[i] + pos_counts[i] for i in range(6)]
+                self.train_neg_counts = [self.train_neg_counts[i] + neg_counts[i] for i in range(6)]
+        elif split == "test":
+            # Accumulate counts
+            if self.test_pos_counts is None:
+                self.test_pos_counts = pos_counts
+                self.test_neg_counts = neg_counts
+            else:
+                self.test_pos_counts = [self.test_pos_counts[i] + pos_counts[i] for i in range(6)]
+                self.test_neg_counts = [self.test_neg_counts[i] + neg_counts[i] for i in range(6)]
+        else:
+            raise ValueError(f"Unsupported split: {split}")
+
+    def plot(self, output_dir: str = ".", filename_prefix: str = "") -> None:
+        # No plot for class distribution
+        pass
+
+    def print_final_result(self) -> None:
+        print(f"\n  {self.key}:")
+        if self.train_pos_counts and self.train_neg_counts:
+            print("    Train Set:")
+            for i in range(6):
+                pos = self.train_pos_counts[i]
+                neg = self.train_neg_counts[i]
+                ratio = neg / pos if pos > 0 else 0
+                print(f"      Allele {i}: Positive: {pos}, Negative: {neg}, Ratio: {ratio:.2f}")
+        
+        if self.test_pos_counts and self.test_neg_counts:
+            print("    Test Set:")
+            for i in range(6):
+                pos = self.test_pos_counts[i]
+                neg = self.test_neg_counts[i]
+                ratio = neg / pos if pos > 0 else 0
+                print(f"      Allele {i}: Positive: {pos}, Negative: {neg}, Ratio: {ratio:.2f}")
 
 
 class LossEvaluator(AbstractEvaluator):
